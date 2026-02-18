@@ -221,6 +221,9 @@ def generate_sbpl(
 # ---------------------------------------------------------------------------
 # Proxy management
 # ---------------------------------------------------------------------------
+PROXY_LOG = Path(tempfile.gettempdir()) / "claude-sandbox-proxy.log"
+
+
 def start_proxy(domains: list[str], proxy_script: Path) -> tuple[subprocess.Popen, int]:
     """Start the domain-filtering proxy, return (process, port)."""
     domains_fd, domains_path = tempfile.mkstemp(prefix="claude-sandbox-domains-")
@@ -349,26 +352,24 @@ def main():
     print("claude-sandbox: proxy log at /tmp/claude-sandbox-proxy.log", file=sys.stderr)
     print("claude-sandbox: launching claude in sandbox", file=sys.stderr)
 
-    # Set proxy env vars and launch
-    env = os.environ.copy()
-    env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
-    env["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
-    env["NO_PROXY"] = "localhost,127.0.0.1"
+    # Replace this Python process with sandbox-exec → claude.
+    # This ensures the terminal sees claude (not Python) as the foreground
+    # process, allowing WezTerm auto tab title detection to work correctly.
+    # The proxy self-terminates via its parent-death watchdog.
+    os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+    os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+    os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 
     # Pass terminal width so tools like ccstatusline can detect it
     # (ps is setuid and cannot run inside sandbox-exec)
     try:
         cols = os.get_terminal_size().columns
-        env["COLUMNS"] = str(cols)
+        os.environ["COLUMNS"] = str(cols)
     except OSError:
         pass
 
-    result = subprocess.run(
-        ["sandbox-exec", "-f", sbpl_path, claude_bin,
-         "--dangerously-skip-permissions", *claude_args],
-        env=env,
-    )
-    sys.exit(result.returncode)
+    os.execvp("sandbox-exec", ["sandbox-exec", "-f", sbpl_path, claude_bin,
+              "--dangerously-skip-permissions", *claude_args])
 
 
 if __name__ == "__main__":

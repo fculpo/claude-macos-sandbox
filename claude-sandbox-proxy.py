@@ -2,9 +2,12 @@
 """HTTPS CONNECT proxy with domain whitelisting for claude-sandbox."""
 
 import json
+import os
 import select
 import socket
 import sys
+import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from socketserver import ThreadingMixIn
 
@@ -85,6 +88,17 @@ def main():
 
     print(f"claude-sandbox-proxy: listening on 127.0.0.1:{port} "
           f"({len(ALLOWED)} domains allowed)", file=sys.stderr, flush=True)
+
+    # Watchdog: exit when parent process dies (after os.execvp in wrapper)
+    ppid = os.getppid()
+    def watchdog():
+        while True:
+            time.sleep(2)
+            if os.getppid() != ppid:
+                server.shutdown()
+                return
+    threading.Thread(target=watchdog, daemon=True).start()
+
     try:
         server.serve_forever()
     except KeyboardInterrupt:
