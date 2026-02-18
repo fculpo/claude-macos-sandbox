@@ -100,8 +100,8 @@ Always allowed, no config needed:
 |---|---|
 | Home directory | Read/write (except sensitive dirs) |
 | `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker` | Denied |
-| System paths (`/usr`, `/System`, `/Library`, `/opt/homebrew`) | Read-only |
-| `/tmp`, `/private/tmp` | Read/write |
+| System paths (`/bin`, `/usr`, `/System`, `/Library`, `/opt/homebrew`) | Read-only |
+| `/tmp`, `/private/tmp`, `$TMPDIR` | Read/write |
 
 ### CLI options
 
@@ -119,4 +119,24 @@ Always allowed, no config needed:
 
 Sandbox violations are logged to `/tmp/claude-sandbox-violations.log`.
 
-Proxy blocks are logged to stderr with `BLOCKED <domain>:<port>`.
+Proxy blocks are logged to `/tmp/claude-sandbox-proxy.log`. Monitor them with:
+
+```bash
+tail -f /tmp/claude-sandbox-proxy.log
+```
+
+### Known limitations
+
+**Setuid binaries cannot run inside the sandbox.** macOS unconditionally blocks
+setuid execution under `sandbox-exec`. This affects `/bin/ps` (used by tools
+like `ccstatusline` for terminal width detection). The wrapper passes `COLUMNS`
+into the environment as a workaround.
+
+**Terminal width is captured at startup.** If you resize the terminal after
+launching, the status line width won't update. Restart `claude-sandbox` to pick
+up the new size.
+
+**macOS TMPDIR is not `/tmp`.** macOS sets `TMPDIR` to
+`/private/var/folders/.../T/`, not `/tmp`. The sandbox automatically includes
+the real `TMPDIR` path in the writable paths so tools like `bunx` can write
+temp files.
