@@ -104,6 +104,7 @@ def generate_sbpl(
         ';; --- Process ---',
         '(allow process-exec)',
         '(allow process-fork)',
+        '(allow process-info-pidinfo)',
         '(allow signal)',
         '',
         ';; --- Sysctl ---',
@@ -125,6 +126,8 @@ def generate_sbpl(
         '',
         ';; --- System read paths ---',
         '(allow file-read-data (literal "/"))',
+        '(allow file-read* (subpath "/bin"))',
+        '(allow file-read* (subpath "/sbin"))',
         '(allow file-read* (subpath "/usr/lib"))',
         '(allow file-read* (subpath "/usr/share"))',
         '(allow file-read* (subpath "/usr/bin"))',
@@ -167,13 +170,24 @@ def generate_sbpl(
             lines.append(f'(allow file-read* ({kind} "{d}"))')
             lines.append(f'(allow file-write* ({kind} "{d}"))')
 
-    # Temp / device writes
+    # Temp / device writes (macOS TMPDIR is in /private/var/folders/, not /tmp)
+    tmpdir = os.environ.get("TMPDIR", "").rstrip("/")
+    tmpdir_lines = []
+    if tmpdir and tmpdir not in ("/tmp", "/private/tmp"):
+        real_tmpdir = os.path.realpath(tmpdir)
+        tmpdir_lines.append(f'(allow file-read* (subpath "{tmpdir}"))')
+        tmpdir_lines.append(f'(allow file-write* (subpath "{tmpdir}"))')
+        if real_tmpdir != tmpdir:
+            tmpdir_lines.append(f'(allow file-read* (subpath "{real_tmpdir}"))')
+            tmpdir_lines.append(f'(allow file-write* (subpath "{real_tmpdir}"))')
+
     lines.extend([
         '',
         ';; --- Temp / device writes ---',
         '(allow file-write* (subpath "/tmp"))',
         '(allow file-write* (subpath "/private/tmp"))',
         '(allow file-write* (subpath "/dev"))',
+        *tmpdir_lines,
     ])
 
     # Network: localhost only (proxy handles external connections)
@@ -216,10 +230,11 @@ def start_proxy(domains: list[str], proxy_script: Path) -> tuple[subprocess.Pope
     port_fd, port_path = tempfile.mkstemp(prefix="claude-sandbox-port-")
     os.close(port_fd)
 
+    proxy_log = open("/tmp/claude-sandbox-proxy.log", "a")
     proc = subprocess.Popen(
         [sys.executable, str(proxy_script), domains_path],
         stdout=open(port_path, "w"),
-        stderr=sys.stderr,
+        stderr=proxy_log,
     )
 
     # Wait for proxy to write its port (up to 5 seconds)
@@ -331,6 +346,7 @@ def main():
     _, proxy_port = start_proxy(domains, proxy_script)
 
     print(f"claude-sandbox: proxy on 127.0.0.1:{proxy_port}", file=sys.stderr)
+    print("claude-sandbox: proxy log at /tmp/claude-sandbox-proxy.log", file=sys.stderr)
     print("claude-sandbox: launching claude in sandbox", file=sys.stderr)
 
     # Set proxy env vars and launch
@@ -338,6 +354,14 @@ def main():
     env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
     env["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
     env["NO_PROXY"] = "localhost,127.0.0.1"
+
+    # Pass terminal width so tools like ccstatusline can detect it
+    # (ps is setuid and cannot run inside sandbox-exec)
+    try:
+        cols = os.get_terminal_size().columns
+        env["COLUMNS"] = str(cols)
+    except OSError:
+        pass
 
     result = subprocess.run(
         ["sandbox-exec", "-f", sbpl_path, claude_bin,
