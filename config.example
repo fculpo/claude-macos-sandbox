@@ -1,0 +1,17 @@
+# claude-sandbox configuration
+# Lines: write=<path>, read=<path>, domain=<domain>
+# CLI flags merge with these values.
+
+# Writable directories (project dirs Claude can modify)
+#write=/Users/you/projects/myapp
+
+# Read-only directories
+#read=/Users/you/.gitconfig
+#read=/Users/you/.config/git
+
+# Allowed domains (added to built-in defaults: api.anthropic.com,
+# mcp-proxy.anthropic.com, statsig.anthropic.com)
+domain=gitlab.com
+domain=registry.npmjs.org
+domain=pypi.org
+domain=files.pythonhosted.org

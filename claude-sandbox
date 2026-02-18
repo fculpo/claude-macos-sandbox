@@ -1,0 +1,351 @@
+#!/usr/bin/env python3
+"""claude-sandbox — macOS sandbox-exec wrapper for Claude Code.
+
+Restricts filesystem and network access via an SBPL profile, and enforces
+domain-level network filtering through a local HTTPS CONNECT proxy.
+
+Architecture:
+  [Claude Code in sandbox] --HTTPS_PROXY--> [localhost proxy] --> [Internet]
+  SBPL restricts to localhost-only; proxy whitelists allowed domains.
+"""
+
+import argparse
+import atexit
+import json
+import os
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+from pathlib import Path
+
+HOME = Path.home()
+
+DEFAULT_CLAUDE_BIN = HOME / ".local" / "bin" / "claude"
+DEFAULT_CONFIG_FILE = HOME / ".config" / "claude-sandbox" / "config"
+
+DEFAULT_DOMAINS = [
+    "api.anthropic.com",
+    "mcp-proxy.anthropic.com",
+    "statsig.anthropic.com",
+]
+
+
+# ---------------------------------------------------------------------------
+# Config file loading
+# ---------------------------------------------------------------------------
+def load_config(path: Path) -> tuple[list[str], list[str], list[str]]:
+    """Load write dirs, read dirs, and domains from config file."""
+    write_dirs, read_dirs, domains = [], [], []
+    if not path.is_file():
+        return write_dirs, read_dirs, domains
+
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("write="):
+            write_dirs.append(line[len("write="):])
+        elif line.startswith("read="):
+            read_dirs.append(line[len("read="):])
+        elif line.startswith("domain="):
+            domains.append(line[len("domain="):])
+        else:
+            print(f"config: ignoring unknown line: {line}", file=sys.stderr)
+
+    return write_dirs, read_dirs, domains
+
+
+def dedupe(items: list[str]) -> list[str]:
+    """Deduplicate preserving order, filtering empty strings."""
+    seen = set()
+    result = []
+    for item in items:
+        if item and item not in seen:
+            seen.add(item)
+            result.append(item)
+    return result
+
+
+def validate_dirs(label: str, dirs: list[str]) -> list[str]:
+    """Warn and skip directories that don't exist."""
+    valid = []
+    for d in dirs:
+        if not d:
+            continue
+        if os.path.exists(d):
+            valid.append(d)
+        else:
+            print(f"warning: {label} path does not exist, skipping: {d}",
+                  file=sys.stderr)
+    return valid
+
+
+# ---------------------------------------------------------------------------
+# SBPL profile generation
+# ---------------------------------------------------------------------------
+def generate_sbpl(
+    read_dirs: list[str],
+    write_dirs: list[str],
+    sensitive_dirs: list[str] | None = None,
+) -> str:
+    """Generate the SBPL sandbox profile."""
+    home = str(HOME)
+
+    if sensitive_dirs is None:
+        sensitive_dirs = [".ssh", ".gnupg", ".gpg", ".aws", ".kube", ".docker"]
+
+    lines = [
+        '(version 1)',
+        '(deny default)',
+        '(trace "/tmp/claude-sandbox-violations.log")',
+        '',
+        ';; --- Process ---',
+        '(allow process-exec)',
+        '(allow process-fork)',
+        '(allow signal)',
+        '',
+        ';; --- Sysctl ---',
+        '(allow sysctl-read)',
+        '',
+        ';; --- Mach IPC ---',
+        '(allow mach-lookup)',
+        '',
+        ';; --- IPC / POSIX shared memory ---',
+        '(allow ipc-posix-shm-read-data)',
+        '(allow ipc-posix-shm-read-metadata)',
+        '(allow ipc-posix-shm-write-create)',
+        '(allow ipc-posix-shm-write-data)',
+        '(allow ipc-posix-shm-write-unlink)',
+        '',
+        ';; --- File metadata (global) ---',
+        '(allow file-read-metadata)',
+        '(allow file-ioctl)',
+        '',
+        ';; --- System read paths ---',
+        '(allow file-read-data (literal "/"))',
+        '(allow file-read* (subpath "/usr/lib"))',
+        '(allow file-read* (subpath "/usr/share"))',
+        '(allow file-read* (subpath "/usr/bin"))',
+        '(allow file-read* (subpath "/usr/sbin"))',
+        '(allow file-read* (subpath "/usr/local"))',
+        '(allow file-read* (subpath "/System"))',
+        '(allow file-read* (subpath "/Library"))',
+        '(allow file-read* (subpath "/opt/homebrew"))',
+        '(allow file-read* (subpath "/private/etc"))',
+        '(allow file-read* (subpath "/private/var"))',
+        '(allow file-read* (subpath "/etc"))',
+        '(allow file-read* (subpath "/var"))',
+        '(allow file-read* (subpath "/dev"))',
+        '(allow file-read* (subpath "/tmp"))',
+        '(allow file-read* (subpath "/private/tmp"))',
+        '',
+        ';; --- Home directory: broad read ---',
+        f'(allow file-read* (subpath "{home}"))',
+    ]
+
+    # User read-only paths
+    if read_dirs:
+        lines.append('')
+        lines.append(';; --- User read-only paths ---')
+        for d in read_dirs:
+            kind = "subpath" if os.path.isdir(d) else "literal"
+            lines.append(f'(allow file-read* ({kind} "{d}"))')
+
+    # Home directory: broad write
+    lines.append('')
+    lines.append(';; --- Home directory: broad write ---')
+    lines.append(f'(allow file-write* (subpath "{home}"))')
+
+    # User writable paths (project dirs from config/CLI)
+    if write_dirs:
+        lines.append('')
+        lines.append(';; --- User writable paths ---')
+        for d in write_dirs:
+            kind = "subpath" if os.path.isdir(d) else "literal"
+            lines.append(f'(allow file-read* ({kind} "{d}"))')
+            lines.append(f'(allow file-write* ({kind} "{d}"))')
+
+    # Temp / device writes
+    lines.extend([
+        '',
+        ';; --- Temp / device writes ---',
+        '(allow file-write* (subpath "/tmp"))',
+        '(allow file-write* (subpath "/private/tmp"))',
+        '(allow file-write* (subpath "/dev"))',
+    ])
+
+    # Network: localhost only (proxy handles external connections)
+    lines.extend([
+        '',
+        ';; --- Network: system plumbing ---',
+        '(allow network-outbound (control-name "com.apple.netsrc"))',
+        '(allow network-outbound (control-name "com.apple.network.statistics"))',
+        '(allow system-socket',
+        '  (require-all (socket-domain AF_SYSTEM) (socket-protocol 2))',
+        '  (socket-domain AF_ROUTE))',
+        '',
+        ';; --- Network: localhost only (proxy handles external connections) ---',
+        '(allow network-outbound (remote ip "localhost:*"))',
+        '(allow network-inbound (local ip "localhost:*"))',
+        '(allow network-bind (local ip "localhost:*"))',
+    ])
+
+    # Deny sensitive home subdirectories (MUST come last — SBPL is last-match-wins)
+    if sensitive_dirs:
+        lines.append('')
+        lines.append(';; --- Deny sensitive home directories (last-match-wins) ---')
+        for name in sensitive_dirs:
+            d = f"{home}/{name}"
+            lines.append(f'(deny file-read* (subpath "{d}"))')
+            lines.append(f'(deny file-write* (subpath "{d}"))')
+
+    return "\n".join(lines) + "\n"
+
+
+# ---------------------------------------------------------------------------
+# Proxy management
+# ---------------------------------------------------------------------------
+def start_proxy(domains: list[str], proxy_script: Path) -> tuple[subprocess.Popen, int]:
+    """Start the domain-filtering proxy, return (process, port)."""
+    domains_fd, domains_path = tempfile.mkstemp(prefix="claude-sandbox-domains-")
+    with os.fdopen(domains_fd, "w") as f:
+        json.dump(domains, f)
+
+    port_fd, port_path = tempfile.mkstemp(prefix="claude-sandbox-port-")
+    os.close(port_fd)
+
+    proc = subprocess.Popen(
+        [sys.executable, str(proxy_script), domains_path],
+        stdout=open(port_path, "w"),
+        stderr=sys.stderr,
+    )
+
+    # Wait for proxy to write its port (up to 5 seconds)
+    for _ in range(50):
+        if os.path.getsize(port_path) > 0:
+            break
+        time.sleep(0.1)
+    else:
+        proc.kill()
+        raise RuntimeError("proxy failed to start within 5 seconds")
+
+    with open(port_path) as f:
+        port = int(f.read().strip())
+
+    # Register cleanup
+    def cleanup():
+        proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+        for p in (domains_path, port_path):
+            try:
+                os.unlink(p)
+            except OSError:
+                pass
+
+    atexit.register(cleanup)
+    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+
+    return proc, port
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser(
+        description="Wrap Claude Code in a macOS sandbox with domain filtering.",
+        epilog="Everything after '--' is forwarded to the claude binary.",
+    )
+    parser.add_argument("--project-dir", default=None,
+                        help="Project directory (default: cwd)")
+    parser.add_argument("--write-dir", action="append", default=[],
+                        help="Additional writable directory (repeatable)")
+    parser.add_argument("--read-dir", action="append", default=[],
+                        help="Additional read-only directory (repeatable)")
+    parser.add_argument("--allow-domain", action="append", default=[],
+                        help="Additional domain to allow HTTPS access (repeatable)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the SBPL profile and exit")
+    parser.add_argument("--claude-bin", default=None,
+                        help=f"Path to claude binary (default: {DEFAULT_CLAUDE_BIN})")
+    parser.add_argument("--config", default=None,
+                        help=f"Config file path (default: {DEFAULT_CONFIG_FILE})")
+
+    # Split on '--' to separate our args from claude args
+    argv = sys.argv[1:]
+    claude_args = []
+    if "--" in argv:
+        idx = argv.index("--")
+        claude_args = argv[idx + 1:]
+        argv = argv[:idx]
+
+    args = parser.parse_args(argv)
+
+    claude_bin = args.claude_bin or os.environ.get("CLAUDE_BIN") or str(DEFAULT_CLAUDE_BIN)
+    config_file = Path(args.config or os.environ.get("CONFIG_FILE") or DEFAULT_CONFIG_FILE)
+
+    project_dir = os.path.abspath(args.project_dir or os.getcwd())
+
+    # Load config
+    cfg_write, cfg_read, cfg_domains = load_config(config_file)
+
+    # Merge and deduplicate
+    write_dirs = dedupe([
+        str(HOME / ".claude"),
+        str(HOME / ".cache"),
+        str(HOME / ".bun"),
+        str(HOME / ".local" / "share" / "claude"),
+        str(HOME / ".npm"),
+        str(HOME / ".config"),
+        *args.write_dir,
+        *cfg_write,
+    ])
+    read_dirs = dedupe([*args.read_dir, *cfg_read])
+    domains = dedupe([*DEFAULT_DOMAINS, *args.allow_domain, *cfg_domains])
+
+    # Validate paths
+    write_dirs = validate_dirs("write", write_dirs)
+    read_dirs = validate_dirs("read", read_dirs)
+
+    print(f"claude-sandbox: {len(domains)} allowed domains", file=sys.stderr)
+
+    # Generate SBPL
+    sbpl = generate_sbpl(read_dirs, write_dirs)
+
+    sbpl_fd, sbpl_path = tempfile.mkstemp(prefix="claude-sandbox-")
+    with os.fdopen(sbpl_fd, "w") as f:
+        f.write(sbpl)
+    atexit.register(lambda: os.unlink(sbpl_path) if os.path.exists(sbpl_path) else None)
+
+    if args.dry_run:
+        print(sbpl, end="")
+        return
+
+    # Start proxy
+    proxy_script = Path(__file__).resolve().parent / "claude-sandbox-proxy.py"
+    _, proxy_port = start_proxy(domains, proxy_script)
+
+    print(f"claude-sandbox: proxy on 127.0.0.1:{proxy_port}", file=sys.stderr)
+    print("claude-sandbox: launching claude in sandbox", file=sys.stderr)
+
+    # Set proxy env vars and launch
+    env = os.environ.copy()
+    env["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+    env["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+    env["NO_PROXY"] = "localhost,127.0.0.1"
+
+    result = subprocess.run(
+        ["sandbox-exec", "-f", sbpl_path, claude_bin,
+         "--dangerously-skip-permissions", *claude_args],
+        env=env,
+    )
+    sys.exit(result.returncode)
+
+
+if __name__ == "__main__":
+    main()
