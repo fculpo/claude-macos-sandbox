@@ -1,0 +1,25 @@
+#!/bin/sh
+# ps shim for sandbox-exec (real /bin/ps is setuid and blocked).
+# Handles the specific patterns used by ccstatusline for TTY width detection.
+
+all_args="$*"
+
+case "$all_args" in
+  *tty=*)
+    # Return the controlling terminal name (e.g. "ttys001")
+    tty_name=$(tty < /dev/tty 2>/dev/null)
+    if [ -n "$tty_name" ] && [ "$tty_name" != "not a tty" ]; then
+      echo "${tty_name#/dev/}"
+      exit 0
+    fi
+    exit 1
+    ;;
+  *ppid=*)
+    # Return a placeholder PID — the outer tty= call resolves it
+    echo "1"
+    exit 0
+    ;;
+esac
+
+# Unsupported pattern
+exit 1

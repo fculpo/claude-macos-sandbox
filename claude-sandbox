@@ -365,13 +365,12 @@ def main():
     os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
     os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 
-    # Pass terminal width so tools like ccstatusline can detect it
-    # (ps is setuid and cannot run inside sandbox-exec)
-    try:
-        cols = os.get_terminal_size().columns
-        os.environ["COLUMNS"] = str(cols)
-    except OSError:
-        pass
+    # Prepend shims directory to PATH so the ps shim is found before /bin/ps.
+    # /bin/ps is setuid and cannot run inside sandbox-exec; the shim handles
+    # the TTY-detection patterns that ccstatusline uses for terminal width,
+    # giving it dynamic resize support (unlike a static COLUMNS env var).
+    shims_dir = str(Path(__file__).resolve().parent / "shims")
+    os.environ["PATH"] = shims_dir + ":" + os.environ.get("PATH", "")
 
     os.execvp("sandbox-exec", ["sandbox-exec", "-f", sbpl_path, claude_bin,
               "--dangerously-skip-permissions", *claude_args])

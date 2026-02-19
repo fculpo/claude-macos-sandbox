@@ -129,12 +129,9 @@ tail -f /tmp/claude-sandbox-proxy.log
 
 **Setuid binaries cannot run inside the sandbox.** macOS unconditionally blocks
 setuid execution under `sandbox-exec`. This affects `/bin/ps` (used by tools
-like `ccstatusline` for terminal width detection). The wrapper passes `COLUMNS`
-into the environment as a workaround.
-
-**Terminal width is captured at startup.** If you resize the terminal after
-launching, the status line width won't update. Restart `claude-sandbox` to pick
-up the new size.
+like `ccstatusline` for terminal width detection). A `ps` shim in `shims/` is
+prepended to `PATH` to handle the TTY-detection patterns ccstatusline uses,
+giving it dynamic terminal width support.
 
 **macOS TMPDIR is not `/tmp`.** macOS sets `TMPDIR` to
 `/private/var/folders/.../T/`, not `/tmp`. The sandbox automatically includes

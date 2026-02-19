@@ -9,7 +9,9 @@ mkdir -p "$PREFIX"
 
 cp "$SCRIPT_DIR/claude-sandbox" "$PREFIX/claude-sandbox"
 cp "$SCRIPT_DIR/claude-sandbox-proxy.py" "$PREFIX/claude-sandbox-proxy.py"
-chmod +x "$PREFIX/claude-sandbox" "$PREFIX/claude-sandbox-proxy.py"
+mkdir -p "$PREFIX/shims"
+cp "$SCRIPT_DIR/shims/ps" "$PREFIX/shims/ps"
+chmod +x "$PREFIX/claude-sandbox" "$PREFIX/claude-sandbox-proxy.py" "$PREFIX/shims/ps"
 
 echo "Installed to $PREFIX/claude-sandbox"
 
