@@ -94,7 +94,11 @@ def generate_sbpl(
     home = str(HOME)
 
     if sensitive_dirs is None:
-        sensitive_dirs = [".ssh", ".gnupg", ".gpg", ".aws", ".kube", ".docker"]
+        sensitive_dirs = [".ssh", ".aws", ".kube", ".docker"]
+
+    # GPG dirs: allow reads (public keyring lookup) but deny writes.
+    # Private key operations are handled by the pre-launched gpg-agent.
+    gpg_dirs = [".gnupg", ".gpg"]
 
     lines = [
         '(version 1)',
@@ -204,6 +208,7 @@ def generate_sbpl(
         '',
         ';; --- Network: localhost only (proxy handles external connections) ---',
         '(allow network-outbound (remote ip "localhost:*"))',
+        '(allow network-outbound (remote unix-socket))',
         '(allow network-inbound (local ip "localhost:*"))',
         '(allow network-bind (local ip "localhost:*"))',
     ])
@@ -218,6 +223,14 @@ def generate_sbpl(
             d = f"{home}/{name}"
             lines.append(f'(deny file-read-data (subpath "{d}"))')
             lines.append(f'(deny file-read-xattr (subpath "{d}"))')
+            lines.append(f'(deny file-write* (subpath "{d}"))')
+
+    # GPG directories: deny writes only (reads needed for public keyring lookup)
+    if gpg_dirs:
+        lines.append('')
+        lines.append(';; --- GPG directories: write-deny only (read for signing) ---')
+        for name in gpg_dirs:
+            d = f"{home}/{name}"
             lines.append(f'(deny file-write* (subpath "{d}"))')
 
     return "\n".join(lines) + "\n"
@@ -371,6 +384,11 @@ def main():
     # giving it dynamic resize support (unlike a static COLUMNS env var).
     shims_dir = str(Path(__file__).resolve().parent / "shims")
     os.environ["PATH"] = shims_dir + ":" + os.environ.get("PATH", "")
+
+    # Pre-launch gpg-agent so GPG inside the sandbox can connect to it
+    # without needing to start the agent itself.
+    subprocess.run(["gpgconf", "--launch", "gpg-agent"],
+                   capture_output=True)
 
     os.execvp("sandbox-exec", ["sandbox-exec", "-f", sbpl_path, claude_bin,
               "--dangerously-skip-permissions", *claude_args])

@@ -99,7 +99,8 @@ Always allowed, no config needed:
 | Scope | Access |
 |---|---|
 | Home directory | Read/write (except sensitive dirs) |
-| `~/.ssh`, `~/.gnupg`, `~/.aws`, `~/.kube`, `~/.docker` | Denied |
+| `~/.ssh`, `~/.aws`, `~/.kube`, `~/.docker` | Denied |
+| `~/.gnupg`, `~/.gpg` | Read-only (GPG commit signing via pre-launched agent) |
 | System paths (`/bin`, `/usr`, `/System`, `/Library`, `/opt/homebrew`) | Read-only |
 | `/tmp`, `/private/tmp`, `$TMPDIR` | Read/write |
 
@@ -132,6 +133,11 @@ setuid execution under `sandbox-exec`. This affects `/bin/ps` (used by tools
 like `ccstatusline` for terminal width detection). A `ps` shim in `shims/` is
 prepended to `PATH` to handle the TTY-detection patterns ccstatusline uses,
 giving it dynamic terminal width support.
+
+**GPG commit signing** works out of the box. The sandbox pre-launches `gpg-agent`
+before entering the sandbox and allows Unix domain socket connections so GPG can
+communicate with the agent. `~/.gnupg` is read-only inside the sandbox (public
+keyring lookup); private key operations are handled by the agent running outside.
 
 **macOS TMPDIR is not `/tmp`.** macOS sets `TMPDIR` to
 `/private/var/folders/.../T/`, not `/tmp`. The sandbox automatically includes
