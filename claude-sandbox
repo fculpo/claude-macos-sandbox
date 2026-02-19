@@ -120,8 +120,9 @@ def generate_sbpl(
         '(allow ipc-posix-shm-write-data)',
         '(allow ipc-posix-shm-write-unlink)',
         '',
-        ';; --- File metadata (global) ---',
+        ';; --- File metadata and data (global) ---',
         '(allow file-read-metadata)',
+        '(allow file-read-data)',
         '(allow file-ioctl)',
         '',
         ';; --- System read paths ---',
@@ -186,6 +187,7 @@ def generate_sbpl(
         ';; --- Temp / device writes ---',
         '(allow file-write* (subpath "/tmp"))',
         '(allow file-write* (subpath "/private/tmp"))',
+        f'(allow file-write* (subpath "{os.path.realpath(tempfile.gettempdir())}"))',
         '(allow file-write* (subpath "/dev"))',
         *tmpdir_lines,
     ])
@@ -207,12 +209,15 @@ def generate_sbpl(
     ])
 
     # Deny sensitive home subdirectories (MUST come last — SBPL is last-match-wins)
+    # Use explicit operations (file-read-data, file-read-xattr) instead of
+    # file-read* because SBPL wildcard denies don't override specific allows.
     if sensitive_dirs:
         lines.append('')
         lines.append(';; --- Deny sensitive home directories (last-match-wins) ---')
         for name in sensitive_dirs:
             d = f"{home}/{name}"
-            lines.append(f'(deny file-read* (subpath "{d}"))')
+            lines.append(f'(deny file-read-data (subpath "{d}"))')
+            lines.append(f'(deny file-read-xattr (subpath "{d}"))')
             lines.append(f'(deny file-write* (subpath "{d}"))')
 
     return "\n".join(lines) + "\n"
