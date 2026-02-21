@@ -72,22 +72,34 @@ class ConnectProxy(BaseHTTPRequestHandler):
 
 
 def main():
-    if len(sys.argv) != 2:
-        print(f"Usage: {sys.argv[0]} <allowed-domains.json>", file=sys.stderr)
+    # Parse args: [--port PORT] <domains-file>
+    port = 0
+    argv = sys.argv[1:]
+    if len(argv) >= 2 and argv[0] == "--port":
+        port = int(argv[1])
+        argv = argv[2:]
+    if len(argv) != 1:
+        print(f"Usage: {sys.argv[0]} [--port PORT] <allowed-domains.json>",
+              file=sys.stderr)
         sys.exit(1)
 
     global ALLOWED, DOMAINS_PATH
-    DOMAINS_PATH = sys.argv[1]
+    DOMAINS_PATH = argv[0]
     ALLOWED = load_allowed_domains(DOMAINS_PATH)
+
+    # Defensive: ignore SIGPIPE so broken client connections can't kill the proxy
+    signal.signal(signal.SIGPIPE, signal.SIG_IGN)
+
+    pid = os.getpid()
 
     def reload_handler(signum, frame):
         global ALLOWED
         try:
             ALLOWED = load_allowed_domains(DOMAINS_PATH)
-            print(f"claude-sandbox-proxy: reloaded ({len(ALLOWED)} domains allowed)",
+            print(f"claude-sandbox-proxy[{pid}]: reloaded ({len(ALLOWED)} domains allowed)",
                   file=sys.stderr, flush=True)
         except Exception as e:
-            print(f"claude-sandbox-proxy: reload failed: {e}",
+            print(f"claude-sandbox-proxy[{pid}]: reload failed: {e}",
                   file=sys.stderr, flush=True)
 
     signal.signal(signal.SIGHUP, reload_handler)
@@ -95,13 +107,13 @@ def main():
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
-    server = ThreadedHTTPServer(("127.0.0.1", 0), ConnectProxy)
+    server = ThreadedHTTPServer(("127.0.0.1", port), ConnectProxy)
     port = server.server_address[1]
 
     # Signal the port to the parent process
     print(port, flush=True)
 
-    print(f"claude-sandbox-proxy: listening on 127.0.0.1:{port} "
+    print(f"claude-sandbox-proxy[{pid}]: listening on 127.0.0.1:{port} "
           f"({len(ALLOWED)} domains allowed)", file=sys.stderr, flush=True)
 
     # Watchdog: exit when parent process dies (after os.execvp in wrapper)
@@ -110,6 +122,8 @@ def main():
         while True:
             time.sleep(2)
             if os.getppid() != ppid:
+                print(f"claude-sandbox-proxy[{pid}]: parent died, shutting down",
+                      file=sys.stderr, flush=True)
                 server.shutdown()
                 return
     threading.Thread(target=watchdog, daemon=True).start()
@@ -118,7 +132,12 @@ def main():
         server.serve_forever()
     except KeyboardInterrupt:
         pass
+    except Exception as e:
+        print(f"claude-sandbox-proxy[{pid}]: server error: {e}",
+              file=sys.stderr, flush=True)
     finally:
+        print(f"claude-sandbox-proxy[{pid}]: exiting",
+              file=sys.stderr, flush=True)
         server.server_close()
 
 

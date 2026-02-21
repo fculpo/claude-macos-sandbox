@@ -239,7 +239,69 @@ def generate_sbpl(
 # ---------------------------------------------------------------------------
 # Proxy management
 # ---------------------------------------------------------------------------
-PROXY_LOG = Path(tempfile.gettempdir()) / "claude-sandbox-proxy.log"
+PROXY_LOG = "/tmp/claude-sandbox-proxy.log"
+
+
+def _pid_exists(pid):
+    """Check if a process is alive."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True  # exists but we can't signal it
+
+
+def _supervisor_loop(proxy_pid, port, proxy_script, domains_path, pid_path,
+                     sandbox_pid):
+    """Monitor proxy and restart it on crash. Runs as a daemon process."""
+    proxy_log = open(PROXY_LOG, "a")
+
+    while True:
+        time.sleep(2)
+
+        # Sandbox gone → kill proxy and exit
+        if not _pid_exists(sandbox_pid):
+            try:
+                os.kill(proxy_pid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError):
+                pass
+            break
+
+        # Proxy gone → restart on the same port
+        if not _pid_exists(proxy_pid):
+            print(f"claude-sandbox-supervisor: proxy (PID {proxy_pid}) died, "
+                  f"restarting on port {port}",
+                  file=sys.stderr, flush=True)
+            time.sleep(0.5)
+            try:
+                new_proc = subprocess.Popen(
+                    [sys.executable, proxy_script, "--port", str(port),
+                     domains_path],
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=proxy_log,
+                    start_new_session=True,
+                )
+                proxy_pid = new_proc.pid
+                with open(pid_path, "w") as f:
+                    f.write(str(proxy_pid))
+                print(f"claude-sandbox-supervisor: proxy restarted "
+                      f"(PID {proxy_pid})",
+                      file=sys.stderr, flush=True)
+            except Exception as e:
+                print(f"claude-sandbox-supervisor: restart failed: {e}",
+                      file=sys.stderr, flush=True)
+
+    # Cleanup temp files
+    for p in (domains_path, pid_path):
+        try:
+            os.unlink(p)
+        except OSError:
+            pass
+
+    os._exit(0)
 
 
 def start_proxy(domains: list[str], proxy_script: Path) -> tuple[subprocess.Popen, int]:
@@ -251,11 +313,14 @@ def start_proxy(domains: list[str], proxy_script: Path) -> tuple[subprocess.Pope
     port_fd, port_path = tempfile.mkstemp(prefix="claude-sandbox-port-")
     os.close(port_fd)
 
-    proxy_log = open("/tmp/claude-sandbox-proxy.log", "a")
+    # Append mode: safe for parallel sandbox instances
+    proxy_log = open(PROXY_LOG, "a")
     proc = subprocess.Popen(
         [sys.executable, str(proxy_script), domains_path],
+        stdin=subprocess.DEVNULL,
         stdout=open(port_path, "w"),
         stderr=proxy_log,
+        start_new_session=True,
     )
 
     # Wait for proxy to write its port (up to 5 seconds)
@@ -270,21 +335,28 @@ def start_proxy(domains: list[str], proxy_script: Path) -> tuple[subprocess.Pope
     with open(port_path) as f:
         port = int(f.read().strip())
 
-    # Register cleanup
-    def cleanup():
-        proc.terminate()
-        try:
-            proc.wait(timeout=3)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-        for p in (domains_path, port_path):
-            try:
-                os.unlink(p)
-            except OSError:
-                pass
+    try:
+        os.unlink(port_path)
+    except OSError:
+        pass
 
-    atexit.register(cleanup)
-    signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    # Write PID file for easy signal targeting (kill -HUP)
+    pid_path = f"/tmp/claude-sandbox-proxy-{port}.pid"
+    with open(pid_path, "w") as f:
+        f.write(str(proc.pid))
+
+    # Fork a supervisor daemon that restarts the proxy on crash.
+    # Double-fork to avoid zombies: child exits immediately,
+    # grandchild runs as a detached daemon.
+    sandbox_pid = os.getpid()
+    child = os.fork()
+    if child == 0:
+        if os.fork() == 0:
+            os.setsid()
+            _supervisor_loop(proc.pid, port, str(proxy_script),
+                             domains_path, pid_path, sandbox_pid)
+        os._exit(0)
+    os.waitpid(child, 0)
 
     return proc, port
 
@@ -367,7 +439,12 @@ def main():
     _, proxy_port = start_proxy(domains, proxy_script)
 
     print(f"claude-sandbox: proxy on 127.0.0.1:{proxy_port}", file=sys.stderr)
-    print("claude-sandbox: proxy log at /tmp/claude-sandbox-proxy.log", file=sys.stderr)
+    print(f"claude-sandbox: proxy PID file: /tmp/claude-sandbox-proxy-{proxy_port}.pid",
+          file=sys.stderr)
+    print(f"claude-sandbox: proxy log: {PROXY_LOG}", file=sys.stderr)
+    print("claude-sandbox: reload domains: edit domains JSON then "
+          f"kill -HUP $(cat /tmp/claude-sandbox-proxy-{proxy_port}.pid)",
+          file=sys.stderr)
     print("claude-sandbox: launching claude in sandbox", file=sys.stderr)
 
     # Replace this Python process with sandbox-exec → claude.

@@ -116,11 +116,45 @@ Always allowed, no config needed:
 --dry-run               Print the SBPL profile and exit
 ```
 
+## Proxy management
+
+### Reloading allowed domains at runtime
+
+You can add or remove domains without restarting the sandbox. Edit the
+domains JSON file (path printed at startup), then send `SIGHUP`:
+
+```bash
+# Find the domains file for the running proxy
+ls /tmp/claude-sandbox-domains-*
+
+# Edit it (it's a JSON array of domain strings)
+# Then reload:
+kill -HUP $(cat /tmp/claude-sandbox-proxy-<port>.pid)
+
+# Or reload ALL running proxy instances at once:
+pkill -HUP -f claude-sandbox-proxy
+```
+
+The proxy logs a confirmation to `/tmp/claude-sandbox-proxy.log` on successful
+reload.
+
+### Auto-restart
+
+A supervisor daemon monitors each proxy instance. If the proxy crashes, the
+supervisor automatically restarts it on the same port — no manual intervention
+needed and no loss of network access for the sandbox.
+
+### PID file
+
+Each proxy writes its PID to `/tmp/claude-sandbox-proxy-<port>.pid`. The port
+and PID file path are printed at startup.
+
 ## Troubleshooting
 
 Sandbox violations are logged to `/tmp/claude-sandbox-violations.log`.
 
-Proxy blocks are logged to `/tmp/claude-sandbox-proxy.log`. Monitor them with:
+Proxy blocks are logged to `/tmp/claude-sandbox-proxy.log` (append mode, safe
+with parallel sandbox instances). Monitor with:
 
 ```bash
 tail -f /tmp/claude-sandbox-proxy.log
