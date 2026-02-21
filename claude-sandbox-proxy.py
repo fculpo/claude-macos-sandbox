@@ -4,6 +4,7 @@
 import json
 import os
 import select
+import signal
 import socket
 import sys
 import threading
@@ -18,6 +19,7 @@ def load_allowed_domains(path):
 
 
 ALLOWED = set()
+DOMAINS_PATH = None
 
 
 class ConnectProxy(BaseHTTPRequestHandler):
@@ -74,8 +76,21 @@ def main():
         print(f"Usage: {sys.argv[0]} <allowed-domains.json>", file=sys.stderr)
         sys.exit(1)
 
-    global ALLOWED
-    ALLOWED = load_allowed_domains(sys.argv[1])
+    global ALLOWED, DOMAINS_PATH
+    DOMAINS_PATH = sys.argv[1]
+    ALLOWED = load_allowed_domains(DOMAINS_PATH)
+
+    def reload_handler(signum, frame):
+        global ALLOWED
+        try:
+            ALLOWED = load_allowed_domains(DOMAINS_PATH)
+            print(f"claude-sandbox-proxy: reloaded ({len(ALLOWED)} domains allowed)",
+                  file=sys.stderr, flush=True)
+        except Exception as e:
+            print(f"claude-sandbox-proxy: reload failed: {e}",
+                  file=sys.stderr, flush=True)
+
+    signal.signal(signal.SIGHUP, reload_handler)
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
