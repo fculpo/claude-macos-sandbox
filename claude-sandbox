@@ -29,6 +29,7 @@ DEFAULT_DOMAINS = [
     "api.anthropic.com",
     "mcp-proxy.anthropic.com",
     "statsig.anthropic.com",
+    "platform.claude.com",
 ]
 
 

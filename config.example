@@ -10,7 +10,7 @@
 #read=/Users/you/.config/git
 
 # Allowed domains (added to built-in defaults: api.anthropic.com,
-# mcp-proxy.anthropic.com, statsig.anthropic.com)
+# mcp-proxy.anthropic.com, statsig.anthropic.com, platform.claude.com)
 domain=gitlab.com
 domain=registry.npmjs.org
 domain=pypi.org

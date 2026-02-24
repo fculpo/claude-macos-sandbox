@@ -93,6 +93,7 @@ Always allowed, no config needed:
 - `api.anthropic.com`
 - `mcp-proxy.anthropic.com`
 - `statsig.anthropic.com`
+- `platform.claude.com`
 
 ### Filesystem restrictions
 
