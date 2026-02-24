@@ -11,6 +11,7 @@ Architecture:
 
 import argparse
 import atexit
+import glob
 import json
 import os
 import signal
@@ -363,9 +364,88 @@ def start_proxy(domains: list[str], proxy_script: Path) -> tuple[subprocess.Pope
 
 
 # ---------------------------------------------------------------------------
+# Subcommands
+# ---------------------------------------------------------------------------
+def _get_proxy_domains_path(pid):
+    """Get the domains JSON path for a proxy process via its command line."""
+    try:
+        result = subprocess.run(
+            ["ps", "-o", "args=", "-p", str(pid)],
+            capture_output=True, text=True,
+        )
+        if result.returncode != 0:
+            return None
+        # Command line: python3 .../claude-sandbox-proxy.py [--port N] <domains-path>
+        # The domains file is always the last argument
+        args = result.stdout.strip().split()
+        if args:
+            candidate = args[-1]
+            if "claude-sandbox-domains-" in candidate:
+                return candidate
+    except Exception:
+        pass
+    return None
+
+
+def reload_proxies():
+    """Re-generate domains JSON from config, then SIGHUP all proxies."""
+    pid_files = glob.glob("/tmp/claude-sandbox-proxy-*.pid")
+    if not pid_files:
+        print("claude-sandbox: no proxy PID files found", file=sys.stderr)
+        return
+
+    # Load current config and compute merged domains
+    config_file = Path(os.environ.get("CONFIG_FILE") or DEFAULT_CONFIG_FILE)
+    _, _, cfg_domains = load_config(config_file)
+    domains = dedupe([*DEFAULT_DOMAINS, *cfg_domains])
+
+    for pid_file in pid_files:
+        try:
+            pid = int(Path(pid_file).read_text().strip())
+        except (ValueError, OSError) as e:
+            print(f"claude-sandbox: skipping {pid_file}: {e}", file=sys.stderr)
+            continue
+
+        # Check process is alive
+        if not _pid_exists(pid):
+            print(f"claude-sandbox: proxy PID {pid} not running (stale {pid_file})",
+                  file=sys.stderr)
+            continue
+
+        # Find and update the proxy's domains JSON file
+        domains_path = _get_proxy_domains_path(pid)
+        if domains_path:
+            try:
+                with open(domains_path, "w") as f:
+                    json.dump(domains, f)
+                print(f"claude-sandbox: updated {domains_path} ({len(domains)} domains)",
+                      file=sys.stderr)
+            except OSError as e:
+                print(f"claude-sandbox: failed to update {domains_path}: {e}",
+                      file=sys.stderr)
+                continue
+        else:
+            print(f"claude-sandbox: could not find domains file for PID {pid}, "
+                  "sending SIGHUP anyway", file=sys.stderr)
+
+        try:
+            os.kill(pid, signal.SIGHUP)
+            print(f"claude-sandbox: sent SIGHUP to proxy PID {pid}",
+                  file=sys.stderr)
+        except PermissionError:
+            print(f"claude-sandbox: no permission to signal PID {pid}",
+                  file=sys.stderr)
+
+
+# ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
 def main():
+    # Handle subcommands before argparse (preserves backward compatibility)
+    if len(sys.argv) > 1 and sys.argv[1] == "reload-proxies":
+        reload_proxies()
+        return
+
     parser = argparse.ArgumentParser(
         description="Wrap Claude Code in a macOS sandbox with domain filtering.",
         epilog="Everything after '--' is forwarded to the claude binary.",

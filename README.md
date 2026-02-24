@@ -129,11 +129,11 @@ domains JSON file (path printed at startup), then send `SIGHUP`:
 ls /tmp/claude-sandbox-domains-*
 
 # Edit it (it's a JSON array of domain strings)
-# Then reload:
-kill -HUP $(cat /tmp/claude-sandbox-proxy-<port>.pid)
+# Then reload all running proxies:
+claude-sandbox reload-proxies
 
-# Or reload ALL running proxy instances at once:
-pkill -HUP -f claude-sandbox-proxy
+# Or reload a specific proxy by port:
+kill -HUP $(cat /tmp/claude-sandbox-proxy-<port>.pid)
 ```
 
 The proxy logs a confirmation to `/tmp/claude-sandbox-proxy.log` on successful
