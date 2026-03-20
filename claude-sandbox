@@ -91,6 +91,7 @@ def generate_sbpl(
     read_dirs: list[str],
     write_dirs: list[str],
     sensitive_dirs: list[str] | None = None,
+    allow_all_network: bool = False,
 ) -> str:
     """Generate the SBPL sandbox profile."""
     home = str(HOME)
@@ -198,7 +199,7 @@ def generate_sbpl(
         *tmpdir_lines,
     ])
 
-    # Network: localhost only (proxy handles external connections)
+    # Network rules
     lines.extend([
         '',
         ';; --- Network: system plumbing ---',
@@ -207,13 +208,25 @@ def generate_sbpl(
         '(allow system-socket',
         '  (require-all (socket-domain AF_SYSTEM) (socket-protocol 2))',
         '  (socket-domain AF_ROUTE))',
-        '',
-        ';; --- Network: localhost only (proxy handles external connections) ---',
-        '(allow network-outbound (remote ip "localhost:*"))',
-        '(allow network-outbound (remote unix-socket))',
-        '(allow network-inbound (local ip "localhost:*"))',
-        '(allow network-bind (local ip "localhost:*"))',
     ])
+
+    if allow_all_network:
+        lines.extend([
+            '',
+            ';; --- Network: all outbound allowed (--no-net-filter) ---',
+            '(allow network-outbound)',
+            '(allow network-inbound)',
+            '(allow network-bind)',
+        ])
+    else:
+        lines.extend([
+            '',
+            ';; --- Network: localhost only (proxy handles external connections) ---',
+            '(allow network-outbound (remote ip "localhost:*"))',
+            '(allow network-outbound (remote unix-socket))',
+            '(allow network-inbound (local ip "localhost:*"))',
+            '(allow network-bind (local ip "localhost:*"))',
+        ])
 
     # Deny sensitive home subdirectories (MUST come last — SBPL is last-match-wins)
     # Use explicit operations (file-read-data, file-read-xattr) instead of
@@ -458,6 +471,8 @@ def main():
                         help="Additional read-only directory (repeatable)")
     parser.add_argument("--allow-domain", action="append", default=[],
                         help="Additional domain to allow HTTPS access (repeatable)")
+    parser.add_argument("--no-net-filter", action="store_true",
+                        help="Disable network filtering (allow all outbound, no proxy)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the SBPL profile and exit")
     parser.add_argument("--claude-bin", default=None,
@@ -504,7 +519,8 @@ def main():
     print(f"claude-sandbox: {len(domains)} allowed domains", file=sys.stderr)
 
     # Generate SBPL
-    sbpl = generate_sbpl(read_dirs, write_dirs)
+    sbpl = generate_sbpl(read_dirs, write_dirs,
+                         allow_all_network=args.no_net_filter)
 
     sbpl_fd, sbpl_path = tempfile.mkstemp(prefix="claude-sandbox-")
     with os.fdopen(sbpl_fd, "w") as f:
@@ -515,26 +531,27 @@ def main():
         print(sbpl, end="")
         return
 
-    # Start proxy
-    proxy_script = Path(__file__).resolve().parent / "claude-sandbox-proxy.py"
-    _, proxy_port = start_proxy(domains, proxy_script)
+    if args.no_net_filter:
+        print("claude-sandbox: network filtering disabled (--no-net-filter)",
+              file=sys.stderr)
+    else:
+        # Start proxy
+        proxy_script = Path(__file__).resolve().parent / "claude-sandbox-proxy.py"
+        _, proxy_port = start_proxy(domains, proxy_script)
 
-    print(f"claude-sandbox: proxy on 127.0.0.1:{proxy_port}", file=sys.stderr)
-    print(f"claude-sandbox: proxy PID file: /tmp/claude-sandbox-proxy-{proxy_port}.pid",
-          file=sys.stderr)
-    print(f"claude-sandbox: proxy log: {PROXY_LOG}", file=sys.stderr)
-    print("claude-sandbox: reload domains: edit domains JSON then "
-          f"kill -HUP $(cat /tmp/claude-sandbox-proxy-{proxy_port}.pid)",
-          file=sys.stderr)
+        print(f"claude-sandbox: proxy on 127.0.0.1:{proxy_port}", file=sys.stderr)
+        print(f"claude-sandbox: proxy PID file: /tmp/claude-sandbox-proxy-{proxy_port}.pid",
+              file=sys.stderr)
+        print(f"claude-sandbox: proxy log: {PROXY_LOG}", file=sys.stderr)
+        print("claude-sandbox: reload domains: edit domains JSON then "
+              f"kill -HUP $(cat /tmp/claude-sandbox-proxy-{proxy_port}.pid)",
+              file=sys.stderr)
+
+        os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+        os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+
     print("claude-sandbox: launching claude in sandbox", file=sys.stderr)
-
-    # Replace this Python process with sandbox-exec → claude.
-    # This ensures the terminal sees claude (not Python) as the foreground
-    # process, allowing WezTerm auto tab title detection to work correctly.
-    # The proxy self-terminates via its parent-death watchdog.
-    os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
-    os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
-    os.environ["NO_PROXY"] = "localhost,127.0.0.1"
 
     # Prepend shims directory to PATH so the ps shim is found before /bin/ps.
     # /bin/ps is setuid and cannot run inside sandbox-exec; the shim handles
