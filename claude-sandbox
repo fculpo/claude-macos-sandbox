@@ -17,6 +17,7 @@ import os
 import signal
 import subprocess
 import sys
+import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -490,7 +491,7 @@ def main():
 
     args = parser.parse_args(argv)
 
-    claude_bin = args.claude_bin or os.environ.get("CLAUDE_BIN") or str(DEFAULT_CLAUDE_BIN)
+    claude_bin = args.claude_bin or os.environ.get("CLAUDE_BIN") or shutil.which("claude") or str(DEFAULT_CLAUDE_BIN)
     config_file = Path(args.config or os.environ.get("CONFIG_FILE") or DEFAULT_CONFIG_FILE)
 
     project_dir = os.path.abspath(args.project_dir or os.getcwd())
