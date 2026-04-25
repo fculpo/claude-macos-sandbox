@@ -17,6 +17,24 @@ chmod +x "$PREFIX/claude-sandbox" "$PREFIX/codex-sandbox" "$PREFIX/claude-sandbo
 echo "Installed to $PREFIX/claude-sandbox"
 echo "Installed to $PREFIX/codex-sandbox"
 
+restore_legacy_alias() {
+    local name="$1"
+    local target="$PREFIX/$name"
+    local real="$PREFIX/$name.real"
+
+    if [[ -f "$target" ]] &&
+       grep -q "# ${name}-sandbox alias shim" "$target" &&
+       [[ -e "$real" ]]; then
+        rm "$target"
+        mv "$real" "$target"
+        chmod +x "$target"
+        echo "Removed legacy alias shim $target and restored $real"
+    fi
+}
+
+restore_legacy_alias "claude"
+restore_legacy_alias "codex"
+
 if [[ ! -f "$CONFIG_DIR/config" ]]; then
     mkdir -p "$CONFIG_DIR"
     cp "$SCRIPT_DIR/config.example" "$CONFIG_DIR/config"

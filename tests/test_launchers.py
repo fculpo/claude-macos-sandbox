@@ -112,6 +112,52 @@ class LauncherDryRunTests(unittest.TestCase):
             self.assertEqual(installed_codex.returncode, 0, installed_codex.stderr)
             self.assertEqual(installed_codex.stdout.strip(), "real codex")
 
+    def test_install_removes_legacy_alias_shims_and_restores_real_commands(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            prefix = tmpdir / "bin"
+            home = tmpdir / "home"
+            prefix.mkdir()
+            home.mkdir()
+
+            for name in ("claude", "codex"):
+                (prefix / name).write_text(
+                    f"#!/usr/bin/env bash\n"
+                    f"# {name}-sandbox alias shim\n"
+                    f"exec \"{prefix}/{name}-sandbox\" \"$@\"\n"
+                )
+                (prefix / f"{name}.real").write_text(
+                    f"#!/bin/sh\necho real {name}\n"
+                )
+                (prefix / name).chmod(0o755)
+                (prefix / f"{name}.real").chmod(0o755)
+
+            env = os.environ.copy()
+            env["PREFIX"] = str(prefix)
+            env["HOME"] = str(home)
+            result = subprocess.run(
+                [str(ROOT / "install.sh")],
+                check=False,
+                capture_output=True,
+                text=True,
+                env=env,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("Removed legacy alias shim", result.stdout)
+
+            for name in ("claude", "codex"):
+                restored = subprocess.run(
+                    [str(prefix / name)],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                )
+                self.assertEqual(restored.returncode, 0, restored.stderr)
+                self.assertEqual(restored.stdout.strip(), f"real {name}")
+                self.assertFalse((prefix / f"{name}.real").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

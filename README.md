@@ -57,10 +57,6 @@ cd ~/my-project
 claude-sandbox
 codex-sandbox
 
-# After install, regular command names route through the sandbox shims
-claude
-codex
-
 # Or specify a project directory
 claude-sandbox --project-dir ~/my-project
 codex-sandbox --project-dir ~/my-project
