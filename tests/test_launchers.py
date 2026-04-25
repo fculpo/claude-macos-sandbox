@@ -62,7 +62,7 @@ class LauncherDryRunTests(unittest.TestCase):
 
         self.assertEqual(resolved, str(real))
 
-    def test_install_preserves_existing_binaries_as_real_targets(self):
+    def test_install_does_not_replace_existing_cli_commands_with_aliases(self):
         with tempfile.TemporaryDirectory() as tmp:
             tmpdir = Path(tmp)
             prefix = tmpdir / "bin"
@@ -87,32 +87,30 @@ class LauncherDryRunTests(unittest.TestCase):
             )
 
             self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn("real claude", (prefix / "claude.real").read_text())
-            self.assertIn("real codex", (prefix / "codex.real").read_text())
-            self.assertIn("claude-sandbox alias shim", (prefix / "claude").read_text())
-            self.assertIn("codex-sandbox alias shim", (prefix / "codex").read_text())
+            self.assertIn("real claude", (prefix / "claude").read_text())
+            self.assertIn("real codex", (prefix / "codex").read_text())
+            self.assertFalse((prefix / "claude.real").exists())
+            self.assertFalse((prefix / "codex.real").exists())
 
-            env["CLAUDE_SANDBOX_ACTIVE"] = "1"
-            active_claude = subprocess.run(
+            installed_claude = subprocess.run(
                 [str(prefix / "claude")],
                 check=False,
                 capture_output=True,
                 text=True,
                 env=env,
             )
-            self.assertEqual(active_claude.returncode, 0, active_claude.stderr)
-            self.assertEqual(active_claude.stdout.strip(), "real claude")
+            self.assertEqual(installed_claude.returncode, 0, installed_claude.stderr)
+            self.assertEqual(installed_claude.stdout.strip(), "real claude")
 
-            env["CODEX_SANDBOX_ACTIVE"] = "1"
-            active_codex = subprocess.run(
+            installed_codex = subprocess.run(
                 [str(prefix / "codex")],
                 check=False,
                 capture_output=True,
                 text=True,
                 env=env,
             )
-            self.assertEqual(active_codex.returncode, 0, active_codex.stderr)
-            self.assertEqual(active_codex.stdout.strip(), "real codex")
+            self.assertEqual(installed_codex.returncode, 0, installed_codex.stderr)
+            self.assertEqual(installed_codex.stdout.strip(), "real codex")
 
 
 if __name__ == "__main__":

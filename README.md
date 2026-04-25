@@ -41,10 +41,8 @@ cd claude-code-sandbox
 ```
 
 Installs `claude-sandbox` and `codex-sandbox` to `~/.local/bin/` (ensure it's
-on your `PATH`) and creates `claude` / `codex` alias shims that route through
-the sandbox launchers. If `~/.local/bin/claude` or `~/.local/bin/codex`
-already exists, the installer preserves it as `.real` and points the shim at
-that preserved binary.
+on your `PATH`). The installer does not replace existing `claude` or `codex`
+commands.
 
 The install also creates a default config at `~/.config/claude-sandbox/config`
 if none exists.
