@@ -4,6 +4,9 @@ Native macOS sandbox for [Claude Code](https://claude.ai/code). Restricts
 filesystem and network access using `sandbox-exec` (SBPL profiles) and a
 local HTTPS CONNECT proxy for domain-level filtering.
 
+Also includes `codex-sandbox`, a Codex CLI launcher that reuses the same
+SBPL/proxy machinery with OpenAI/ChatGPT defaults.
+
 No Docker, no root, no external dependencies — just Python 3.11+ (ships with macOS).
 
 ## How it works
@@ -37,8 +40,14 @@ cd claude-code-sandbox
 ./install.sh
 ```
 
-Installs `claude-sandbox` to `~/.local/bin/` (ensure it's on your `PATH`)
-and creates a default config at `~/.config/claude-sandbox/config` if none exists.
+Installs `claude-sandbox` and `codex-sandbox` to `~/.local/bin/` (ensure it's
+on your `PATH`) and creates `claude` / `codex` alias shims that route through
+the sandbox launchers. If `~/.local/bin/claude` or `~/.local/bin/codex`
+already exists, the installer preserves it as `.real` and points the shim at
+that preserved binary.
+
+The install also creates a default config at `~/.config/claude-sandbox/config`
+if none exists.
 
 To install elsewhere: `PREFIX=/usr/local/bin ./install.sh`
 
@@ -48,21 +57,37 @@ To install elsewhere: `PREFIX=/usr/local/bin ./install.sh`
 # Run from a project directory
 cd ~/my-project
 claude-sandbox
+codex-sandbox
+
+# After install, regular command names route through the sandbox shims
+claude
+codex
 
 # Or specify a project directory
 claude-sandbox --project-dir ~/my-project
+codex-sandbox --project-dir ~/my-project
 
 # Pass arguments to claude
 claude-sandbox -- -p "fix the tests"
 
+# Pass arguments to codex
+codex-sandbox -- "fix the tests"
+
 # Additional writable directory for this session
 claude-sandbox --write-dir ~/other-project
+codex-sandbox --write-dir ~/other-project
 
 # Allow an extra domain for this session
 claude-sandbox --allow-domain extra.example.com
+codex-sandbox --allow-domain extra.example.com
 
 # Preview the generated SBPL profile
 claude-sandbox --dry-run
+codex-sandbox --dry-run
+
+# Disable proxy/domain filtering and allow all outbound network
+claude-sandbox --no-net-filter
+codex-sandbox --no-net-filter
 ```
 
 ## Configuration
@@ -88,12 +113,20 @@ CLI flags merge with config file values.
 
 ### Built-in default domains
 
-Always allowed, no config needed:
+`claude-sandbox` always allows:
 
 - `api.anthropic.com`
 - `mcp-proxy.anthropic.com`
 - `statsig.anthropic.com`
 - `platform.claude.com`
+
+`codex-sandbox` always allows:
+
+- `api.openai.com`
+- `chatgpt.com`
+- `ab.chatgpt.com`
+- `auth.openai.com`
+- `persistent.oaistatic.com`
 
 ### Filesystem restrictions
 
@@ -113,6 +146,8 @@ Always allowed, no config needed:
 --read-dir DIR          Additional read-only directory (repeatable)
 --allow-domain DOMAIN   Additional domain to allow HTTPS access (repeatable)
 --claude-bin PATH       Path to claude binary (default: ~/.local/bin/claude)
+--codex-bin PATH        Path to codex binary (codex-sandbox only)
+--no-net-filter         Disable proxy/domain filtering; allow all outbound
 --config PATH           Config file path (default: ~/.config/claude-sandbox/config)
 --dry-run               Print the SBPL profile and exit
 ```

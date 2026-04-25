@@ -1,0 +1,158 @@
+#!/usr/bin/env python3
+"""codex-sandbox - macOS sandbox-exec wrapper for Codex CLI.
+
+Reuses the claude-sandbox SBPL profile and HTTPS CONNECT proxy machinery, but
+launches Codex with Codex-specific domains, writable state paths, and flags.
+"""
+
+import argparse
+import atexit
+import importlib.util
+import importlib.machinery
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+sys.dont_write_bytecode = True
+
+HOME = Path.home()
+BASE_DIR = Path(__file__).resolve().parent
+DEFAULT_CODEX_BIN = HOME / ".local" / "bin" / "codex"
+DEFAULT_CONFIG_FILE = HOME / ".config" / "claude-sandbox" / "config"
+
+DEFAULT_DOMAINS = [
+    "api.openai.com",
+    "chatgpt.com",
+    "ab.chatgpt.com",
+    "auth.openai.com",
+    "persistent.oaistatic.com",
+]
+
+
+def load_claude_sandbox():
+    path = BASE_DIR / "claude-sandbox"
+    loader = importlib.machinery.SourceFileLoader("claude_sandbox", str(path))
+    spec = importlib.util.spec_from_loader("claude_sandbox", loader)
+    if spec is None or spec.loader is None:
+        raise RuntimeError(f"failed to load {path}")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def main():
+    shared = load_claude_sandbox()
+
+    if len(sys.argv) > 1 and sys.argv[1] == "reload-proxies":
+        shared.reload_proxies(DEFAULT_DOMAINS)
+        return
+
+    parser = argparse.ArgumentParser(
+        description="Wrap Codex CLI in a macOS sandbox with domain filtering.",
+        epilog="Everything after '--' is forwarded to the codex binary.",
+    )
+    parser.add_argument("--project-dir", default=None,
+                        help="Project directory (default: cwd)")
+    parser.add_argument("--write-dir", action="append", default=[],
+                        help="Additional writable directory (repeatable)")
+    parser.add_argument("--read-dir", action="append", default=[],
+                        help="Additional read-only directory (repeatable)")
+    parser.add_argument("--allow-domain", action="append", default=[],
+                        help="Additional domain to allow HTTPS access (repeatable)")
+    parser.add_argument("--no-net-filter", action="store_true",
+                        help="Disable network filtering (allow all outbound, no proxy)")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="Print the SBPL profile and exit")
+    parser.add_argument("--codex-bin", default=None,
+                        help=f"Path to codex binary (default: {DEFAULT_CODEX_BIN})")
+    parser.add_argument("--config", default=None,
+                        help=f"Config file path (default: {DEFAULT_CONFIG_FILE})")
+
+    argv = sys.argv[1:]
+    codex_args = []
+    if "--" in argv:
+        idx = argv.index("--")
+        codex_args = argv[idx + 1:]
+        argv = argv[:idx]
+
+    args = parser.parse_args(argv)
+
+    codex_bin = shared.resolve_cli_bin(
+        "codex",
+        explicit=args.codex_bin,
+        env_var="CODEX_BIN",
+        fallback=DEFAULT_CODEX_BIN,
+        skip_dirs=[BASE_DIR],
+    )
+    config_file = Path(args.config or os.environ.get("CONFIG_FILE") or DEFAULT_CONFIG_FILE)
+
+    project_dir = os.path.abspath(args.project_dir or os.getcwd())
+    os.chdir(project_dir)
+
+    cfg_write, cfg_read, cfg_domains = shared.load_config(config_file)
+
+    write_dirs = shared.dedupe([
+        str(HOME / ".codex"),
+        str(HOME / ".cache"),
+        str(HOME / ".config"),
+        project_dir,
+        *args.write_dir,
+        *cfg_write,
+    ])
+    read_dirs = shared.dedupe([*args.read_dir, *cfg_read])
+    domains = shared.dedupe([*DEFAULT_DOMAINS, *args.allow_domain, *cfg_domains])
+
+    write_dirs = shared.validate_dirs("write", write_dirs)
+    read_dirs = shared.validate_dirs("read", read_dirs)
+
+    print(f"codex-sandbox: {len(domains)} allowed domains", file=sys.stderr)
+
+    sbpl = shared.generate_sbpl(read_dirs, write_dirs,
+                                allow_all_network=args.no_net_filter)
+
+    sbpl_fd, sbpl_path = tempfile.mkstemp(prefix="codex-sandbox-")
+    with os.fdopen(sbpl_fd, "w") as f:
+        f.write(sbpl)
+    atexit.register(lambda: os.unlink(sbpl_path) if os.path.exists(sbpl_path) else None)
+
+    if args.dry_run:
+        print(sbpl, end="")
+        return
+
+    if args.no_net_filter:
+        print("codex-sandbox: network filtering disabled (--no-net-filter)",
+              file=sys.stderr)
+    else:
+        proxy_script = BASE_DIR / "claude-sandbox-proxy.py"
+        _, proxy_port = shared.start_proxy(domains, proxy_script)
+
+        print(f"codex-sandbox: proxy on 127.0.0.1:{proxy_port}", file=sys.stderr)
+        print(f"codex-sandbox: proxy PID file: /tmp/claude-sandbox-proxy-{proxy_port}.pid",
+              file=sys.stderr)
+        print(f"codex-sandbox: proxy log: {shared.PROXY_LOG}", file=sys.stderr)
+        print("codex-sandbox: reload domains: edit domains JSON then "
+              f"kill -HUP $(cat /tmp/claude-sandbox-proxy-{proxy_port}.pid)",
+              file=sys.stderr)
+
+        os.environ["HTTPS_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+        os.environ["HTTP_PROXY"] = f"http://127.0.0.1:{proxy_port}"
+        os.environ["NO_PROXY"] = "localhost,127.0.0.1"
+
+    print("codex-sandbox: launching codex in sandbox", file=sys.stderr)
+
+    shims_dir = str(BASE_DIR / "shims")
+    os.environ["PATH"] = shims_dir + ":" + os.environ.get("PATH", "")
+
+    subprocess.run(["gpgconf", "--launch", "gpg-agent"],
+                   capture_output=True)
+
+    final_args = ["--dangerously-bypass-approvals-and-sandbox", *codex_args]
+    os.environ["CODEX_SANDBOX_ACTIVE"] = "1"
+    os.execvp("sandbox-exec", ["sandbox-exec", "-f", sbpl_path, codex_bin,
+              *final_args])
+
+
+if __name__ == "__main__":
+    main()

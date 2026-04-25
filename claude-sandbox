@@ -17,7 +17,6 @@ import os
 import signal
 import subprocess
 import sys
-import shutil
 import tempfile
 import time
 from pathlib import Path
@@ -83,6 +82,36 @@ def validate_dirs(label: str, dirs: list[str]) -> list[str]:
             print(f"warning: {label} path does not exist, skipping: {d}",
                   file=sys.stderr)
     return valid
+
+
+def resolve_cli_bin(
+    bin_name: str,
+    explicit: str | None,
+    env_var: str,
+    fallback: str | Path,
+    path: str | None = None,
+    skip_dirs: list[str | Path] | None = None,
+) -> str:
+    """Resolve a CLI binary while avoiding sandbox wrapper directories."""
+    if explicit:
+        return explicit
+
+    env_value = os.environ.get(env_var)
+    if env_value:
+        return env_value
+
+    skipped = {os.path.realpath(str(d)) for d in (skip_dirs or [])}
+    search_path = path if path is not None else os.environ.get("PATH", "")
+    for directory in search_path.split(os.pathsep):
+        if not directory:
+            continue
+        if os.path.realpath(directory) in skipped:
+            continue
+        candidate = os.path.join(directory, bin_name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+
+    return str(fallback)
 
 
 # ---------------------------------------------------------------------------
@@ -401,7 +430,7 @@ def _get_proxy_domains_path(pid):
     return None
 
 
-def reload_proxies():
+def reload_proxies(default_domains: list[str] | None = None):
     """Re-generate domains JSON from config, then SIGHUP all proxies."""
     pid_files = glob.glob("/tmp/claude-sandbox-proxy-*.pid")
     if not pid_files:
@@ -411,7 +440,7 @@ def reload_proxies():
     # Load current config and compute merged domains
     config_file = Path(os.environ.get("CONFIG_FILE") or DEFAULT_CONFIG_FILE)
     _, _, cfg_domains = load_config(config_file)
-    domains = dedupe([*DEFAULT_DOMAINS, *cfg_domains])
+    domains = dedupe([*(default_domains or DEFAULT_DOMAINS), *cfg_domains])
 
     for pid_file in pid_files:
         try:
@@ -491,7 +520,13 @@ def main():
 
     args = parser.parse_args(argv)
 
-    claude_bin = args.claude_bin or os.environ.get("CLAUDE_BIN") or shutil.which("claude") or str(DEFAULT_CLAUDE_BIN)
+    claude_bin = resolve_cli_bin(
+        "claude",
+        explicit=args.claude_bin,
+        env_var="CLAUDE_BIN",
+        fallback=DEFAULT_CLAUDE_BIN,
+        skip_dirs=[Path(__file__).resolve().parent],
+    )
     config_file = Path(args.config or os.environ.get("CONFIG_FILE") or DEFAULT_CONFIG_FILE)
 
     project_dir = os.path.abspath(args.project_dir or os.getcwd())
@@ -566,8 +601,20 @@ def main():
     subprocess.run(["gpgconf", "--launch", "gpg-agent"],
                    capture_output=True)
 
+    # --dangerously-skip-permissions is a global flag that breaks subcommand
+    # option parsing (Commander.js strips subcommand flags when globals precede
+    # the subcommand). For subcommands with --permission-mode, use that instead.
+    PERM_MODE_SUBCOMMANDS = {"remote-control", "rc"}
+
+    if claude_args and claude_args[0] in PERM_MODE_SUBCOMMANDS:
+        final_args = [claude_args[0], "--permission-mode", "bypassPermissions",
+                      *claude_args[1:]]
+    else:
+        final_args = ["--dangerously-skip-permissions", *claude_args]
+
+    os.environ["CLAUDE_SANDBOX_ACTIVE"] = "1"
     os.execvp("sandbox-exec", ["sandbox-exec", "-f", sbpl_path, claude_bin,
-              "--dangerously-skip-permissions", *claude_args])
+              *final_args])
 
 
 if __name__ == "__main__":
