@@ -17,6 +17,7 @@ claude-sandbox
 
 # Preview generated SBPL profile without launching
 claude-sandbox --dry-run
+claude-sandbox --allow-gui
 
 # Reload proxy domains at runtime (all instances)
 claude-sandbox reload-proxies
@@ -24,6 +25,7 @@ claude-sandbox reload-proxies
 
 There is no automated test suite. Test manually:
 - `claude-sandbox --dry-run` to inspect the generated SBPL profile
+- `claude-sandbox --allow-gui --dry-run` to inspect the opt-in Electron/Playwright GUI investigation allowances
 - `tail -f /tmp/claude-sandbox-proxy.log` to monitor proxy allow/deny decisions
 - `/tmp/claude-sandbox-violations.log` for sandbox violation events
 
@@ -40,11 +42,13 @@ claude-sandbox (Python)          claude-sandbox-proxy.py (Python)
 └─ shims/ps prepended to PATH
 ```
 
-**Process model**: `claude-sandbox` forks a proxy daemon (with supervisor for auto-restart), then replaces itself with `sandbox-exec → claude` via `os.execvp()`. The supervisor watches the parent PID and kills the proxy when the sandbox exits.
+**Process model**: `claude-sandbox` forks a proxy daemon (with supervisor for auto-restart), optionally starts the GUI helper for `--allow-gui`, then replaces itself with `sandbox-exec → claude` via `os.execvp()`. The supervisor watches the parent PID and kills the proxy when the sandbox exits.
 
 **Key files**:
 - `claude-sandbox` — main wrapper (~556 lines): argument parsing, SBPL generation, proxy lifecycle, `sandbox-exec` invocation
 - `claude-sandbox-proxy.py` — HTTPS CONNECT proxy (~145 lines): domain whitelist, SIGHUP reload, threaded tunneling
+- `claude-sandbox-gui-helper.py` — opt-in out-of-sandbox Electron launcher for `--allow-gui`
+- `electron-gui-wrapper.py` — in-sandbox executable used through `ELECTRON_OVERRIDE_DIST_PATH`
 - `shims/ps` — shell shim replacing setuid `/bin/ps` (blocked by sandbox); handles TTY/PPID patterns for `ccstatusline`
 - `config.example` — template for `~/.config/claude-sandbox/config`
 
@@ -56,6 +60,7 @@ The SBPL profile is generated dynamically in `claude-sandbox` based on merged co
 - GPG dirs (`~/.gnupg`, `~/.gpg`) get read-only access (private key ops go through the pre-launched agent outside the sandbox)
 - Both symlink and real paths for `$TMPDIR` are included (macOS TMPDIR is `/private/var/folders/.../T/`, not `/tmp`)
 - Network restricted to `localhost:*` only; proxy handles external connectivity
+- GUI app startup APIs are disabled by default; `--allow-gui` adds opt-in macOS graphics/HID IOKit allowances and routes Electron startup through the pre-sandbox GUI helper
 
 ## Configuration Merging
 

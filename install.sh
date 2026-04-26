@@ -10,9 +10,17 @@ mkdir -p "$PREFIX"
 cp "$SCRIPT_DIR/claude-sandbox" "$PREFIX/claude-sandbox"
 cp "$SCRIPT_DIR/codex-sandbox" "$PREFIX/codex-sandbox"
 cp "$SCRIPT_DIR/claude-sandbox-proxy.py" "$PREFIX/claude-sandbox-proxy.py"
+cp "$SCRIPT_DIR/claude-sandbox-gui-helper.py" "$PREFIX/claude-sandbox-gui-helper.py"
+cp "$SCRIPT_DIR/electron-gui-wrapper.py" "$PREFIX/electron-gui-wrapper.py"
 mkdir -p "$PREFIX/shims"
 cp "$SCRIPT_DIR/shims/ps" "$PREFIX/shims/ps"
-chmod +x "$PREFIX/claude-sandbox" "$PREFIX/codex-sandbox" "$PREFIX/claude-sandbox-proxy.py" "$PREFIX/shims/ps"
+chmod +x \
+    "$PREFIX/claude-sandbox" \
+    "$PREFIX/codex-sandbox" \
+    "$PREFIX/claude-sandbox-proxy.py" \
+    "$PREFIX/claude-sandbox-gui-helper.py" \
+    "$PREFIX/electron-gui-wrapper.py" \
+    "$PREFIX/shims/ps"
 
 echo "Installed to $PREFIX/claude-sandbox"
 echo "Installed to $PREFIX/codex-sandbox"

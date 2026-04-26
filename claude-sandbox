@@ -15,6 +15,8 @@ import glob
 import json
 import os
 import signal
+import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -122,6 +124,7 @@ def generate_sbpl(
     write_dirs: list[str],
     sensitive_dirs: list[str] | None = None,
     allow_all_network: bool = False,
+    allow_gui_access: bool = False,
 ) -> str:
     """Generate the SBPL sandbox profile."""
     home = str(HOME)
@@ -133,8 +136,11 @@ def generate_sbpl(
     # Private key operations are handled by the pre-launched gpg-agent.
     gpg_dirs = [".gnupg", ".gpg"]
 
-    lines = [
-        '(version 1)',
+    lines = ['(version 1)']
+    if allow_gui_access:
+        lines.append('(import "system.sb")')
+
+    lines.extend([
         '(deny default)',
         '(trace "/tmp/claude-sandbox-violations.log")',
         '',
@@ -150,6 +156,24 @@ def generate_sbpl(
         ';; --- Mach IPC ---',
         '(allow mach-lookup)',
         '',
+    ])
+
+    if allow_gui_access:
+        lines.extend([
+            ';; --- GUI app access (opt-in) ---',
+            '(system-graphics)',
+            '(allow user-preference-read)',
+            '(allow mach-register (local-name-prefix ""))',
+            '(allow hid-control)',
+            '(allow distributed-notification-post)',
+            '(allow iokit-get-properties)',
+            '(allow iokit-open-user-client',
+            '  (iokit-user-client-class "IOHIDParamUserClient"',
+            '                           "IOUserUserClient"))',
+            '',
+        ])
+
+    lines.extend([
         ';; --- IPC / POSIX shared memory ---',
         '(allow ipc-posix-shm-read-data)',
         '(allow ipc-posix-shm-read-metadata)',
@@ -184,7 +208,7 @@ def generate_sbpl(
         '',
         ';; --- Home directory: broad read ---',
         f'(allow file-read* (subpath "{home}"))',
-    ]
+    ])
 
     # User read-only paths
     if read_dirs:
@@ -285,6 +309,37 @@ def generate_sbpl(
 # Proxy management
 # ---------------------------------------------------------------------------
 PROXY_LOG = "/tmp/claude-sandbox-proxy.log"
+
+
+def create_electron_override_dir(wrapper_script: Path, base_dir: Path | None = None) -> str:
+    """Create an ELECTRON_OVERRIDE_DIST_PATH tree that points Electron at a wrapper."""
+    override_dir = Path(base_dir or tempfile.mkdtemp(prefix="claude-sandbox-electron-"))
+    wrapper_path = override_dir / "Electron.app" / "Contents" / "MacOS" / "Electron"
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(wrapper_script, wrapper_path)
+    wrapper_path.chmod(0o755)
+    return str(override_dir)
+
+
+def _reserve_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+def start_gui_helper(base_dir: Path) -> tuple[subprocess.Popen, int]:
+    """Start the out-of-sandbox GUI process helper."""
+    port = _reserve_local_port()
+    helper_script = base_dir / "claude-sandbox-gui-helper.py"
+    proc = subprocess.Popen(
+        [sys.executable, str(helper_script), "--port", str(port),
+         "--parent-pid", str(os.getpid())],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=open(PROXY_LOG, "a"),
+        start_new_session=True,
+    )
+    return proc, port
 
 
 def _pid_exists(pid):
@@ -503,6 +558,8 @@ def main():
                         help="Additional domain to allow HTTPS access (repeatable)")
     parser.add_argument("--no-net-filter", action="store_true",
                         help="Disable network filtering (allow all outbound, no proxy)")
+    parser.add_argument("--allow-gui", action="store_true",
+                        help="Allow additional macOS GUI startup APIs for Electron/Playwright")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the SBPL profile and exit")
     parser.add_argument("--claude-bin", default=None,
@@ -556,7 +613,8 @@ def main():
 
     # Generate SBPL
     sbpl = generate_sbpl(read_dirs, write_dirs,
-                         allow_all_network=args.no_net_filter)
+                         allow_all_network=args.no_net_filter,
+                         allow_gui_access=args.allow_gui)
 
     sbpl_fd, sbpl_path = tempfile.mkstemp(prefix="claude-sandbox-")
     with os.fdopen(sbpl_fd, "w") as f:
@@ -566,6 +624,17 @@ def main():
     if args.dry_run:
         print(sbpl, end="")
         return
+
+    if args.allow_gui:
+        base_dir = Path(__file__).resolve().parent
+        _, gui_port = start_gui_helper(base_dir)
+        override_dir = create_electron_override_dir(base_dir / "electron-gui-wrapper.py")
+        os.environ["CLAUDE_SANDBOX_GUI_HELPER"] = f"127.0.0.1:{gui_port}"
+        os.environ["ELECTRON_OVERRIDE_DIST_PATH"] = override_dir
+        print(f"claude-sandbox: GUI helper on 127.0.0.1:{gui_port}",
+              file=sys.stderr)
+        print(f"claude-sandbox: Electron override: {override_dir}",
+              file=sys.stderr)
 
     if args.no_net_filter:
         print("claude-sandbox: network filtering disabled (--no-net-filter)",

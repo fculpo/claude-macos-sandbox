@@ -82,6 +82,10 @@ codex-sandbox --dry-run
 # Disable proxy/domain filtering and allow all outbound network
 claude-sandbox --no-net-filter
 codex-sandbox --no-net-filter
+
+# Allow additional macOS GUI startup APIs for Electron/Playwright investigations
+claude-sandbox --allow-gui
+codex-sandbox --allow-gui
 ```
 
 ## Configuration
@@ -142,6 +146,7 @@ CLI flags merge with config file values.
 --claude-bin PATH       Path to claude binary (default: ~/.local/bin/claude)
 --codex-bin PATH        Path to codex binary (codex-sandbox only)
 --no-net-filter         Disable proxy/domain filtering; allow all outbound
+--allow-gui             Allow additional macOS GUI startup APIs for Electron/Playwright
 --config PATH           Config file path (default: ~/.config/claude-sandbox/config)
 --dry-run               Print the SBPL profile and exit
 ```
@@ -207,3 +212,12 @@ keyring lookup); private key operations are handled by the agent running outside
 `/private/var/folders/.../T/`, not `/tmp`. The sandbox automatically includes
 the real `TMPDIR` path in the writable paths so tools like `bunx` can write
 temp files.
+
+**GUI apps need an out-of-sandbox helper.** Electron and Playwright Electron
+startup touch AppKit, graphics, HID, and IOKit APIs even for simple commands
+such as `electron --version`. The `--allow-gui` flag enables an opt-in set of
+graphics/HID allowances and starts a localhost helper before entering
+`sandbox-exec`. The helper is restricted to Electron binaries under
+`node_modules/electron/dist/` and is exposed to Electron through
+`ELECTRON_OVERRIDE_DIST_PATH`, so normal non-GUI commands keep the narrower
+default profile.

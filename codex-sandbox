@@ -63,6 +63,8 @@ def main():
                         help="Additional domain to allow HTTPS access (repeatable)")
     parser.add_argument("--no-net-filter", action="store_true",
                         help="Disable network filtering (allow all outbound, no proxy)")
+    parser.add_argument("--allow-gui", action="store_true",
+                        help="Allow additional macOS GUI startup APIs for Electron/Playwright")
     parser.add_argument("--dry-run", action="store_true",
                         help="Print the SBPL profile and exit")
     parser.add_argument("--codex-bin", default=None,
@@ -110,7 +112,8 @@ def main():
     print(f"codex-sandbox: {len(domains)} allowed domains", file=sys.stderr)
 
     sbpl = shared.generate_sbpl(read_dirs, write_dirs,
-                                allow_all_network=args.no_net_filter)
+                                allow_all_network=args.no_net_filter,
+                                allow_gui_access=args.allow_gui)
 
     sbpl_fd, sbpl_path = tempfile.mkstemp(prefix="codex-sandbox-")
     with os.fdopen(sbpl_fd, "w") as f:
@@ -120,6 +123,18 @@ def main():
     if args.dry_run:
         print(sbpl, end="")
         return
+
+    if args.allow_gui:
+        _, gui_port = shared.start_gui_helper(BASE_DIR)
+        override_dir = shared.create_electron_override_dir(
+            BASE_DIR / "electron-gui-wrapper.py"
+        )
+        os.environ["CLAUDE_SANDBOX_GUI_HELPER"] = f"127.0.0.1:{gui_port}"
+        os.environ["ELECTRON_OVERRIDE_DIST_PATH"] = override_dir
+        print(f"codex-sandbox: GUI helper on 127.0.0.1:{gui_port}",
+              file=sys.stderr)
+        print(f"codex-sandbox: Electron override: {override_dir}",
+              file=sys.stderr)
 
     if args.no_net_filter:
         print("codex-sandbox: network filtering disabled (--no-net-filter)",

@@ -20,6 +20,60 @@ def load_launcher(name):
 
 
 class LauncherDryRunTests(unittest.TestCase):
+    def test_default_profile_does_not_enable_gui_access(self):
+        launcher = load_launcher("claude-sandbox")
+
+        sbpl = launcher.generate_sbpl([], [])
+
+        self.assertNotIn("GUI app access", sbpl)
+        self.assertNotIn("(system-graphics)", sbpl)
+        self.assertNotIn("IOHIDParamUserClient", sbpl)
+
+    def test_allow_gui_profile_includes_graphics_and_hid_access(self):
+        launcher = load_launcher("claude-sandbox")
+
+        sbpl = launcher.generate_sbpl([], [], allow_gui_access=True)
+
+        self.assertIn('(import "system.sb")', sbpl)
+        self.assertIn("GUI app access", sbpl)
+        self.assertIn("(system-graphics)", sbpl)
+        self.assertIn("IOHIDParamUserClient", sbpl)
+        self.assertIn("IOUserUserClient", sbpl)
+        self.assertIn("(allow iokit-get-properties)", sbpl)
+
+    def test_gui_electron_override_points_to_wrapper_shape(self):
+        launcher = load_launcher("claude-sandbox")
+
+        with tempfile.TemporaryDirectory() as tmp:
+            tmpdir = Path(tmp)
+            wrapper_source = tmpdir / "wrapper.py"
+            wrapper_source.write_text("#!/usr/bin/env python3\n")
+
+            override_dir = Path(
+                launcher.create_electron_override_dir(wrapper_source, tmpdir / "override")
+            )
+
+            wrapper = override_dir / "Electron.app" / "Contents" / "MacOS" / "Electron"
+            self.assertTrue(wrapper.exists())
+            self.assertTrue(os.access(wrapper, os.X_OK))
+            self.assertEqual(wrapper.read_text(), wrapper_source.read_text())
+
+    def test_electron_wrapper_does_not_timeout_long_running_processes(self):
+        wrapper = ROOT / "electron-gui-wrapper.py"
+
+        source = wrapper.read_text()
+
+        self.assertIn("socket.create_connection((host, int(raw_port)), timeout=10)", source)
+        self.assertIn("sock.settimeout(None)", source)
+
+    def test_gui_helper_streams_child_output_without_waiting_for_eof(self):
+        helper = ROOT / "claude-sandbox-gui-helper.py"
+
+        source = helper.read_text()
+
+        self.assertIn("os.read(fd, 65536)", source)
+        self.assertNotIn("stream.read(65536)", source)
+
     def test_codex_no_net_filter_allows_all_network_without_proxy(self):
         result = subprocess.run(
             [str(ROOT / "codex-sandbox"), "--dry-run", "--no-net-filter"],
@@ -89,6 +143,8 @@ class LauncherDryRunTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertIn("real claude", (prefix / "claude").read_text())
             self.assertIn("real codex", (prefix / "codex").read_text())
+            self.assertTrue((prefix / "claude-sandbox-gui-helper.py").exists())
+            self.assertTrue((prefix / "electron-gui-wrapper.py").exists())
             self.assertFalse((prefix / "claude.real").exists())
             self.assertFalse((prefix / "codex.real").exists())
 
