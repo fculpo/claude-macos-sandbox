@@ -3,12 +3,23 @@ import subprocess
 import tempfile
 import unittest
 import os
+import time
 import importlib.util
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def wait_for_exit(proc, timeout=3):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        code = proc.poll()
+        if code is not None:
+            return code
+        time.sleep(0.05)
+    return None
 
 
 def load_launcher(name):
@@ -73,6 +84,36 @@ class LauncherDryRunTests(unittest.TestCase):
 
         self.assertIn("os.read(fd, 65536)", source)
         self.assertNotIn("stream.read(65536)", source)
+
+    def test_gui_helpers_have_independent_lifecycles(self):
+        launcher = load_launcher("claude-sandbox")
+        first_proc = None
+        second_proc = None
+        first_fd = None
+        second_fd = None
+
+        try:
+            first_proc, _ = launcher.start_gui_helper(ROOT)
+            second_proc, _ = launcher.start_gui_helper(ROOT)
+            first_fd = first_proc.claude_sandbox_lifecycle_fd
+            second_fd = second_proc.claude_sandbox_lifecycle_fd
+
+            os.close(first_fd)
+            first_fd = None
+
+            self.assertIsNotNone(wait_for_exit(first_proc))
+            self.assertIsNone(second_proc.poll())
+        finally:
+            for fd in (first_fd, second_fd):
+                if fd is not None:
+                    try:
+                        os.close(fd)
+                    except OSError:
+                        pass
+            for proc in (first_proc, second_proc):
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+                    wait_for_exit(proc)
 
     def test_codex_no_net_filter_allows_all_network_without_proxy(self):
         result = subprocess.run(

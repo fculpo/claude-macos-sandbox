@@ -136,18 +136,38 @@ def _pid_exists(pid: int) -> bool:
         return True
 
 
+def _lifecycle_alive(lifecycle_fd: Optional[int], parent_pid: Optional[int]) -> bool:
+    if lifecycle_fd is not None:
+        try:
+            ready, _, _ = select.select([lifecycle_fd], [], [], 0)
+        except OSError:
+            return False
+        if not ready:
+            return True
+        try:
+            return os.read(lifecycle_fd, 1) != b""
+        except OSError:
+            return False
+    if parent_pid is not None:
+        return _pid_exists(parent_pid)
+    return False
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--port", type=int, required=True)
-    parser.add_argument("--parent-pid", type=int, required=True)
+    parser.add_argument("--parent-pid", type=int, default=None)
+    parser.add_argument("--lifecycle-fd", type=int, default=None)
     args = parser.parse_args()
+    if args.lifecycle_fd is None and args.parent_pid is None:
+        parser.error("--lifecycle-fd or --parent-pid is required")
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as server:
         server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         server.bind(("127.0.0.1", args.port))
         server.listen()
         server.settimeout(1)
-        while _pid_exists(args.parent_pid):
+        while _lifecycle_alive(args.lifecycle_fd, args.parent_pid):
             try:
                 client, _ = server.accept()
             except TimeoutError:
