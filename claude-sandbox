@@ -174,7 +174,8 @@ def generate_sbpl(
         ])
 
     lines.extend([
-        ';; --- IPC / POSIX shared memory ---',
+        ';; --- IPC / POSIX shared memory and semaphores ---',
+        '(allow ipc-posix-sem)',
         '(allow ipc-posix-shm-read-data)',
         '(allow ipc-posix-shm-read-metadata)',
         '(allow ipc-posix-shm-write-create)',

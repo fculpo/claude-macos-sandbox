@@ -40,6 +40,13 @@ class LauncherDryRunTests(unittest.TestCase):
         self.assertNotIn("(system-graphics)", sbpl)
         self.assertNotIn("IOHIDParamUserClient", sbpl)
 
+    def test_default_profile_allows_posix_semaphores_for_multiprocessing(self):
+        launcher = load_launcher("claude-sandbox")
+
+        sbpl = launcher.generate_sbpl([], [])
+
+        self.assertIn("(allow ipc-posix-sem)", sbpl)
+
     def test_allow_gui_profile_includes_graphics_and_hid_access(self):
         launcher = load_launcher("claude-sandbox")
 
