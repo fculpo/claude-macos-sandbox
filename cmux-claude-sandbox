@@ -1,0 +1,19 @@
+#!/bin/sh
+# cmux -> Claude Code resume shim.
+#
+# cmux invokes this as the "claude binary" (automation.claudeBinaryPath in
+# ~/.config/cmux/cmux.json). On resume cmux appends args like:
+#     --resume <session-id> --dangerously-skip-permissions
+#
+# This runs the resumed session inside claude-sandbox with network filtering
+# off. claude-sandbox lives in the same install dir as this shim, so resolve it
+# relative to $0 rather than hardcoding a path.
+#
+# --claude-bin is pinned to the real binary on purpose. Without it,
+# claude-sandbox PATH-resolves "claude" and -- inside cmux, which prepends its
+# bundled bin/ to PATH -- finds cmux's own bin/claude wrapper, which in turn
+# resolves the real claude back to THIS shim. The two wrappers then call each
+# other forever. Pinning the absolute real binary breaks that recursion.
+DIR="$(cd "$(dirname "$0")" && pwd)"
+exec "$DIR/claude-sandbox" --no-net-filter \
+    --claude-bin "$HOME/.local/bin/claude" -- "$@"
